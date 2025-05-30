@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Sound Matching Game</title>
+  <style>
+    body { font-family: sans-serif; text-align: center; padding: 2rem; }
+    #controls, #summary { margin-top: 1.5rem; }
+    #advancedControls { margin-top: 1rem; }
+    .hidden { display: none; }
+    label { margin-right: 0.5rem; }
+    input[type=range] { width: 300px; }
+    table { margin: 1rem auto; border-collapse: collapse; }
+    td, th { border: 1px solid #ccc; padding: 0.3rem 0.6rem; }
+  </style>
+</head>
+<body>
+  <h1>Sound Matching Game</h1>
+
+  <!-- Game setup -->
+  <div id="setup">
+    <label for="difficultySelect">Select difficulty:</label>
+    <select id="difficultySelect">
+      <option value="easy">Easy</option>
+      <option value="medium">Medium</option>
+      <option value="hard">Hard</option>
+    </select>
+    <button id="startBtn">Start Game</button>
+  </div>
+
+  <p id="roundInfo"></p>
+
+  <!-- In‑game controls -->
+  <div id="controls" class="hidden">
+    <div>
+      <button id="playOriginalBtn">▶️ Play Original (once)</button>
+    </div>
+
+    <div style="margin-top:1rem;">
+      <label for="freqRange">Frequency: <span id="freqVal">440</span> Hz</label><br />
+      <input id="freqRange" type="range" min="100" max="1200" value="440" />
+    </div>
+
+    <div style="margin-top:1rem;">
+      <label for="waveSelect">Waveform:</label>
+      <select id="waveSelect">
+        <option>sine</option>
+        <option>square</option>
+        <option>triangle</option>
+        <option>sawtooth</option>
+      </select>
+    </div>
+
+    <!-- Advanced parameters (hard mode) -->
+    <div id="advancedControls" class="hidden">
+      <div style="margin-top:1rem;">
+        <label for="filterRange">Low‑pass cutoff: <span id="filterVal">10000</span> Hz</label><br />
+        <input id="filterRange" type="range" min="500" max="10000" value="10000" />
+      </div>
+
+      <div style="margin-top:1rem;">
+        <label for="delayRange">Delay: <span id="delayVal">0</span> s</label><br />
+        <input id="delayRange" type="range" min="0" max="0.5" step="0.01" value="0" />
+      </div>
+
+      <div style="margin-top:1rem;">
+        <label for="panRange">Pan: <span id="panVal">0</span></label><br />
+        <input id="panRange" type="range" min="-1" max="1" step="0.01" value="0" />
+      </div>
+    </div>
+
+    <div style="margin-top:1rem;">
+      <button id="playMyBtn">▶️ Play My Sound</button>
+      <button id="submitBtn">Submit Guess</button>
+    </div>
+  </div>
+
+  <!-- Results -->
+  <div id="summary" class="hidden"></div>
+
+  <script>
+    /*** Config ***/
+    const TOTAL_ROUNDS = 5;        // easy tweak for # rounds
+    /*** End Config ***/
+
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    let currentRound = 0;
+    let difficulty = 'easy';
+    let target = null;    // target sound descriptor for a round
+    const scores = [];
+
+    /* Elements */
+    const setupDiv          = document.getElementById('setup');
+    const difficultySelect  = document.getElementById('difficultySelect');
+    const startBtn          = document.getElementById('startBtn');
+    const roundInfo         = document.getElementById('roundInfo');
+    const controlsDiv       = document.getElementById('controls');
+    const advancedDiv       = document.getElementById('advancedControls');
+    const playOriginalBtn   = document.getElementById('playOriginalBtn');
+    const freqRange         = document.getElementById('freqRange');
+    const freqVal           = document.getElementById('freqVal');
+    const waveSelect        = document.getElementById('waveSelect');
+    const filterRange       = document.getElementById('filterRange');
+    const filterVal         = document.getElementById('filterVal');
+    const delayRange        = document.getElementById('delayRange');
+    const delayVal          = document.getElementById('delayVal');
+    const panRange          = document.getElementById('panRange');
+    const panVal            = document.getElementById('panVal');
+    const playMyBtn         = document.getElementById('playMyBtn');
+    const submitBtn         = document.getElementById('submitBtn');
+    const summaryDiv        = document.getElementById('summary');
+
+    /* Range readouts */
+    freqRange.addEventListener('input', () =>  (freqVal.textContent   = freqRange.value));
+    filterRange?.addEventListener('input', () => (filterVal.textContent = filterRange.value));
+    delayRange?.addEventListener('input', () =>  (delayVal.textContent  = delayRange.value));
+    panRange?.addEventListener('input', () =>    (panVal.textContent    = panRange.value));
+
+    /* Helper */
+    const randBetween = (min, max, step = 1) =>
+      Math.round((Math.random() * (max - min) + min) / step) * step;
+
+    function playTone({ freq, wave, filterCutoff = 10000, delayTime = 0, pan = 0 }, duration = 1) {
+      const osc   = audioCtx.createOscillator();
+      const gain  = audioCtx.createGain();
+      const delay = audioCtx.createDelay(1.0);
+      const biquad = audioCtx.createBiquadFilter();
+      const panner = audioCtx.createStereoPanner();
+
+      osc.type           = wave;
+      osc.frequency.value = freq;
+
+      biquad.type        = 'lowpass';
+      biquad.frequency.value = filterCutoff;
+
+      delay.delayTime.value = delayTime;
+      panner.pan.value      = pan;
+
+      /* envelope */
+      gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.6, audioCtx.currentTime + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + duration);
+
+      /* connect chain conditionally */
+      osc.connect(biquad)
+         .connect(delay)
+         .connect(panner)
+         .connect(gain)
+         .connect(audioCtx.destination);
+
+      osc.start();
+      osc.stop(audioCtx.currentTime + duration + 0.05);
+    }
+
+    /** Metric list depends on difficulty **/
+    const metricSets = {
+      easy:   ['pitch'],
+      medium: ['pitch', 'wave'],
+      hard:   ['pitch', 'wave', 'filter', 'delay', 'pan'],
+    };
+
+    function newRound() {
+      currentRound++;
+      if (currentRound > TOTAL_ROUNDS) {
+        finishGame();
+        return;
+      }
+
+      /* Generate target */
+      target = {
+        freq: randBetween(200, 1000),
+        wave: ['sine','square','triangle','sawtooth'][randBetween(0,3)],
+        filterCutoff: difficulty === 'hard' ? randBetween(1000, 10000, 100) : 10000,
+        delayTime:    difficulty === 'hard' ? randBetween(0, 50, 1) / 100 : 0,  // 0‑0.5 s
+        pan:          difficulty === 'hard' ? randBetween(-100, 100, 1) / 100 : 0,
+      };
+
+      /* UI reset */
+      controlsDiv.classList.remove('hidden');
+      summaryDiv.classList.add('hidden');
+      roundInfo.textContent = `Round ${currentRound}/${TOTAL_ROUNDS} – Difficulty: ${difficulty}`;
+      playOriginalBtn.disabled = false;
+
+      /* Baseline values */
+      freqRange.value  = 440;  freqVal.textContent  = 440;
+      waveSelect.value = 'sine';
+      filterRange.value = filterVal.textContent = 10000;
+      delayRange.value  = delayVal.textContent  = 0;
+      panRange.value    = panVal.textContent    = 0;
+
+      /* Show/hide advanced controls */
+      if (difficulty === 'hard') advancedDiv.classList.remove('hidden');
+      else advancedDiv.classList.add('hidden');
+    }
+
+    function finishGame() {
+      controlsDiv.classList.add('hidden');
+      roundInfo.textContent = 'Game Over!';
+
+      const metrics = metricSets[difficulty];
+      const avg = arr => arr.reduce((a,b)=>a+b, 0) / arr.length;
+
+      /* Build summary tables */
+      let metricRows = metrics.map(m => {
+        const avgScore = avg(scores.map(s => s[m])).toFixed(1);
+        const labelMap = { pitch:'Pitch', wave:'Waveform', filter:'Filter', delay:'Delay', pan:'Pan' };
+        return `<tr><td>${labelMap[m]}</td><td>${avgScore}</td></tr>`;
+      }).join('');
+
+      const overallAvg = avg(scores.map(s => s.total)).toFixed(1);
+
+      summaryDiv.innerHTML = `
+        <h2>Your Results</h2>
+        <table>
+          <tr><th>Metric</th><th>Average Score (0‑100)</th></tr>
+          ${metricRows}
+          <tr><td><strong>Overall</strong></td><td><strong>${overallAvg}</strong></td></tr>
+        </table>
+
+        <h3>Round‑by‑Round</h3>
+        <table>
+          <tr>
+            <th>#</th>
+            ${metrics.map(m=>`<th>${m.charAt(0).toUpperCase()+m.slice(1)}</th>`).join('')}
+            <th>Total</th>
+          </tr>
+          ${scores.map((s,i)=>`
+              <tr>
+                <td>${i+1}</td>
+                ${metrics.map(m=>`<td>${s[m].toFixed(1)}</td>`).join('')}
+                <td>${s.total.toFixed(1)}</td>
+              </tr>`).join('')}
+        </table>
+
+        <button id="restartBtn">Play Again</button>
+      `;
+
+      summaryDiv.classList.remove('hidden');
+      document.getElementById('restartBtn').addEventListener('click', () => {
+        currentRound = 0;
+        scores.length = 0;
+        setupDiv.classList.remove('hidden');
+        controlsDiv.classList.add('hidden');
+        summaryDiv.classList.add('hidden');
+      });
+    }
+
+    /* Scoring helpers */
+    function scorePitch(user, tgt) {
+      const diff = Math.abs(user - tgt);
+      return Math.max(0, 100 - (diff / tgt) * 100);
+    }
+    function scoreRatio(user, tgt, maxDiff) {
+      const diff = Math.abs(user - tgt);
+      return Math.max(0, 100 - (diff / maxDiff) * 100);
+    }
+
+    /* Event listeners */
+    startBtn.addEventListener('click', () => {
+      difficulty = difficultySelect.value;
+      setupDiv.classList.add('hidden');
+      newRound();
+    });
+
+    playOriginalBtn.addEventListener('click', () => {
+      playTone(target);
+      playOriginalBtn.disabled = true;
+    });
+
+    playMyBtn.addEventListener('click', () => {
+      const userSound = collectUserSound();
+      playTone(userSound);
+    });
+
+    submitBtn.addEventListener('click', () => {
+      const user = collectUserSound();
+      const metrics = metricSets[difficulty];
+
+      const result = {};
+
+      /* Metric scores */
+      result.pitch  = scorePitch(user.freq,   target.freq);
+      result.wave   = user.wave === target.wave ? 100 : 0;
+      result.filter = scoreRatio(user.filterCutoff, target.filterCutoff, 9500);
+      result.delay  = scoreRatio(user.delayTime,    target.delayTime, 0.5);
+      result.pan    = scoreRatio(user.pan,          target.pan, 2);  // range 2
+
+      /* Overall weighting */
+      if (difficulty === 'easy') {
+        result.total = result.pitch;
+      } else if (difficulty === 'medium') {
+        result.total = result.pitch * 0.7 + result.wave * 0.3;
+      } else {
+        result.total =
+          result.pitch  * 0.4 +
+          result.wave   * 0.2 +
+          result.filter * 0.15 +
+          result.delay  * 0.1 +
+          result.pan    * 0.15;
+      }
+
+      scores.push(result);
+      newRound();
+    });
+
+    /* Collect user sound description from UI */
+    function collectUserSound() {
+      return {
+        freq: Number(freqRange.value),
+        wave: waveSelect.value,
+        filterCutoff: Number(filterRange?.value) || 10000,
+        delayTime: Number(delayRange?.value)     || 0,
+        pan: Number(panRange?.value)             || 0,
+      };
+    }
+  </script>
+</body>
+</html>
